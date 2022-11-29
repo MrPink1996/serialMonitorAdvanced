@@ -13,12 +13,13 @@ import numpy as np
 class serialMonitor(QThread):
     trigger_monitor = pyqtSignal()
     trigger_plot = pyqtSignal()
-    y = 0.0
+    y = []
     text = ""
     ser = serial.Serial()
+    nGraphs = 1
     controll = True
     plotting = False
-
+    splitPlots = False
     def setConfiguration(self, conf):
         self.ser.port  = conf[0]
         self.ser.baudrate = conf[1]
@@ -43,30 +44,39 @@ class serialMonitor(QThread):
                 if(self.controll == False):
                     break
                 self.text = self.text.decode()
+                if(self.text.find(',') != -1 ):
+                    self.nGraphs = len(self.text.split(","))
                 if(self.plotting):
-                    self.y = float(self.text)
+                    if(self.nGraphs > 1):
+                        buffer = self.text.split(",")
+                        self.nGraphs = len(buffer)
+                        self.y = [float(item) for item in buffer]
+                    else:
+                        self.y = float(self.text)
                     self.trigger_plot.emit()
                 self.trigger_monitor.emit()
             except Exception as e:
                 print("Unexpected error:", e)
-        self.ser.close()
+        self.ser.close() 
         self.exit()
 
 class Window(QDialog):
     serialPorts = glob.glob('/dev/tty*')
     connectButtonState = False
     plottingButtonState = False
+    nValues = 100
 
-    textBrowserText_left = ""
-    y = np.zeros(100)
-    x = np.arange(start=0, stop=100, step=1)
-    pen = pg.mkPen(color=(0, 0, 0), width=1)
-    monitor_text = []
 
-    def __init__(self):
-        super().__init__()
-        self.resize(995, 641)
+    textBrowserText = ""
+    nGraphs = 1
+    y = np.zeros((nGraphs, nValues))
+    #y = np.zeros(100)
+    x = np.arange(start=0, stop=nValues, step=1)
+    pen = []
+    pen.append(pg.mkPen(color=(0, 0, 0), width=5))
+    #monitor_text = []
 
+    def setupLayout(self):
         # MAIN PAGE LAYOUT
         self.mainPage_vertical = QVBoxLayout()
         self.mainPage_vertical.setContentsMargins(0, 0, 0, 0)
@@ -186,26 +196,73 @@ class Window(QDialog):
         self.plotButton.setMaximumSize(QSize(16777215, 170))
         self.plotButton.setObjectName("plotButton")
         self.plotButton.setText("Enable Plotting")
+        
+        # SPLIT PLOTS
+        self.splitPlotsCheckBox = QCheckBox()
+        self.splitPlotsCheckBox.setMaximumSize(QSize(1678238, 16777215))
+        self.splitPlotsCheckBox.setBaseSize(QSize(0, 0))
+        self.splitPlotsCheckBox.setObjectName("splitPlotsCheckBox")
+        self.splitPlotsCheckBox.setText("Split Plots")
+
         # TEXTBROWSER RIGHT
-        self.graph = pg.PlotWidget()
-        self.graph.setObjectName("graph")
-        self.graph.setBackground('w')
+        self.graph = []
+        self.graph.append(pg.PlotWidget())
+        self.graph[0].setObjectName("graph")
+        self.graph[0].setBackground('w')
         # UPDATE LAYOUT RIGHT
         self.plotBar.addWidget(self.plotButton)
+        self.plotBar.addWidget(self.splitPlotsCheckBox)
         self.layout_right.addLayout(self.plotBar)
-        self.layout_right.addWidget(self.graph)
+        self.layout_right.addWidget(self.graph[0])
 
         # UPDATE MAIN LAYOUT
         self.sidePage_horizontal.addLayout(self.layout_right)
         self.mainPage_vertical.addLayout(self.sidePage_horizontal)
         self.setLayout(self.mainPage_vertical)
 
+    def setupLayout2(self):
+        if(self.splitPlotsCheckBox.isChecked()):
+            self.layout_right.removeWidget(self.graph[0])
+            self.graph = []
+            for i in range(self.nGraphs):
+                self.graph.append(pg.PlotWidget())
+                self.graph[i].setObjectName("graph" + str(i))
+                self.graph[i].setBackground('w')
+                self.layout_right.addWidget(self.graph[i])
+        else:
+            for i in range(len(self.graph)):
+                self.layout_right.removeWidget(self.graph[i])
+            self.graph = []
+            self.graph.append(pg.PlotWidget())
+            self.graph[0].setObjectName("graph0")
+            self.graph[0].setBackground('w')
+            self.layout_right.addWidget(self.graph[0])
+
+
+    def __init__(self):
+        super().__init__()
+        self.resize(995, 641)
+        self.setupLayout()
+        
         # CALLBACKS        
         self.connectionButton.clicked.connect(self.onPressedConnectButton)
         self.plotButton.clicked.connect(self.onPressedPlotButton)
+        self.splitPlotsCheckBox.clicked.connect(self.onPressedSplitPlots)
         #self.sendButton_left.clicked.connect(self.onPressedSendButtonLeft)
-
         self.show()
+
+    def onPressedSplitPlots(self):
+        self.graphData = []
+        if(self.splitPlotsCheckBox.isChecked() == False):
+            for i in range(len(self.y)):
+                buffer = self.graph[0].plot(self.x, self.y[i], pen=self.pen[i], symbol='o', symbolSize=3, symbolBrush='k')
+                self.graphData.append(buffer)
+        else:
+            for i in range(len(self.y)):
+                buffer = self.graph[i].plot(self.x, self.y[i], pen=self.pen[i], symbol='o', symbolSize=3, symbolBrush='k')
+                self.graphData.append(buffer)
+        self.setupLayout2()
+        self.splitPlots = True
 
     def onPressedConnectButton(self):
         if(self.connectButtonState == False):
@@ -226,7 +283,19 @@ class Window(QDialog):
 
     def onPressedPlotButton(self):
         if(self.plottingButtonState == False):
-            self.graphData = self.graph.plot(self.x, self.y, pen=self.pen, symbol='o', symbolSize=7, symbolBrush='k')
+            self.pen = []
+            for i in range(self.nGraphs):
+                self.pen.append(pg.mkPen(color=(min(255*i, 255), (1 - np.mod(i, 2))*150, 100*i), width=5))
+            self.y = np.zeros((self.nGraphs, self.nValues))
+            self.graphData = []
+            if(self.splitPlotsCheckBox.isChecked() == False):
+                for i in range(len(self.y)):
+                    buffer = self.graph[0].plot(self.x, self.y[i], pen=self.pen[i], symbol='o', symbolSize=3, symbolBrush='k')
+                    self.graphData.append(buffer)
+            else:
+                for i in range(len(self.y)):
+                    buffer = self.graph[i].plot(self.x, self.y[i], pen=self.pen[i], symbol='o', symbolSize=3, symbolBrush='k')
+                    self.graphData.append(buffer)
             self.plottingButtonState = True
             self.thread.plotting = True
             self.plotButton.setText("Disable Plotting")
@@ -234,9 +303,11 @@ class Window(QDialog):
         else:
             self.plottingButtonState = False
             self.thread.plotting = False
-            self.graph.clear()
+            for i in self.graph:
+                i.clear()
             self.plotButton.setText("Enable Plotting")
             self.plotButton.repaint()
+        
     
     def textArrayToString(self, textArray):
         buffer = ""
@@ -249,15 +320,20 @@ class Window(QDialog):
         return buffer
 
     def updateMonitor(self):
-        self.monitor_text.append(self.thread.text)
-        self.textBrowser.setText(self.textArrayToString(self.monitor_text))
+        self.nGraphs = self.thread.nGraphs
+        self.textBrowserText = self.textBrowserText + self.thread.text
+        if(len(self.textBrowserText) > 500):
+            self.textBrowserText = self.textBrowserText[-500: ]
+        self.textBrowser.setText(self.textBrowserText)
         self.textBrowser.moveCursor(QtGui.QTextCursor.End)
         self.textBrowser.repaint()
 
     def updatePlot(self):
-        self.y = np.delete(self.y, len(self.y) - 1)
-        self.y = np.insert(arr=self.y, obj=0, values=self.thread.y)
-        self.graphData.setData(self.x, self.y)
+        for i in range(self.nGraphs):
+            self.y[i] = np.append([self.thread.y[i]], self.y[i][:-1], axis=0)
+            self.graphData[i].setData(self.x, self.y[i])
+
+
 
     
     # def onPressedSendButtonLeft(self):
